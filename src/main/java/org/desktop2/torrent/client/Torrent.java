@@ -7,5 +7,5 @@ public record Torrent(
     byte[] infoHash,
     String name,
     long length,
-    long pieceLength,
+    int pieceLength,
     List<byte[]> pieces) {}

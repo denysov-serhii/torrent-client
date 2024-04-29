@@ -13,7 +13,7 @@ public class TorrentMapper {
 
     String announce = validateValueType(bencode, "announce", String.class);
     Map<String, Object> info = (Map<String, Object>) validateValueType(bencode, "info", Map.class);
-    byte[] infoHash = infoHashCalculator.calculateHash(info);
+    byte[] infoHash = infoHashCalculator.calculateHash(info, (byte[]) bencode.get("hashInfo"));
     var torrentInfo = mapInfoSection(info);
 
     return new Torrent(
@@ -28,8 +28,8 @@ public class TorrentMapper {
   private TorrentInfo mapInfoSection(Map<String, Object> info) {
     long length = validateValueType(info, "length", Long.class);
     String name = validateValueType(info, "name", String.class);
-    long pieceLength = validateValueType(info, "piece length", Long.class);
-    byte[] piecesAsBytes = validateValueType(info, "pieces", String.class).getBytes();
+    int pieceLength = validateValueType(info, "piece length", Long.class).intValue();
+    byte[] piecesAsBytes = validateValueType(info, "pieces", byte[].class);
 
     List<byte[]> pieces = extractPieces(piecesAsBytes);
 
@@ -65,5 +65,5 @@ public class TorrentMapper {
     return pieces;
   }
 
-  record TorrentInfo(String name, long length, long pieceLength, List<byte[]> pieces) {}
+  record TorrentInfo(String name, long length, int pieceLength, List<byte[]> pieces) {}
 }

@@ -3,17 +3,27 @@ package org.desktop2.torrent.client;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class BencodeDecoder {
+
+  int start;
+  int end;
 
   @SuppressWarnings("unchecked")
   public Map<String, Object> decode(byte[] bencodeData) throws IOException {
     try (InputStream is = new ByteArrayInputStream(bencodeData)) {
-      return (Map<String, Object>) readElement(is);
+      var map = (Map<String, Object>) readElement(is);
+
+      int indexStart = bencodeData.length - start;
+      int size = start - end;
+
+      byte[] hash = new byte[size];
+      System.arraycopy(bencodeData, indexStart, hash, 0, size);
+
+      map.put("hashInfo", hash);
+
+      return map;
     }
   }
 
@@ -80,9 +90,56 @@ public class BencodeDecoder {
       }
 
       String key = readString(is, code);
-      Object value = readElement(is);
+
+      Object value;
+      if (List.of("pieces", "peers").contains(key)) {
+        value = readBytesFromBencode(is, is.read());
+      } else if (key.equals("info")) {
+        start = is.available();
+        value = readElement(is);
+        end = is.available();
+      } else {
+        value = readElement(is);
+      }
+
       map.put(key, value);
     }
+
+    System.out.println(map.keySet());
     return map;
+  }
+
+  private byte[] readBytesFromBencode(InputStream inputStream, int firstLengthDigit)
+      throws IOException {
+    // Initialize length with the first digit provided
+    int length = firstLengthDigit - '0';
+    int characterRead;
+
+    // Read characters until ':' is encountered, calculating the length of the data
+    while ((characterRead = inputStream.read()) != ':') {
+      if (!Character.isDigit(characterRead)) {
+        throw new IOException(
+            "Invalid data length in Bencode format: non-digit character encountered.");
+      }
+      length = length * 10 + (characterRead - '0');
+    }
+
+    // Allocate a buffer based on the calculated length and read the data bytes
+    byte[] buffer = new byte[length];
+    int totalBytesRead = 0;
+    int bytesRead;
+
+    // Ensure to read exactly 'length' bytes (handling short reads)
+    while (totalBytesRead < length
+        && (bytesRead = inputStream.read(buffer, totalBytesRead, length - totalBytesRead)) != -1) {
+      totalBytesRead += bytesRead;
+    }
+
+    if (totalBytesRead != length) {
+      throw new IOException(
+          "Invalid data in Bencode format: mismatch in expected and actual length.");
+    }
+
+    return buffer;
   }
 }
