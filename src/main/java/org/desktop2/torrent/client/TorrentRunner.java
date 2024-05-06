@@ -4,26 +4,20 @@ import static java.lang.StringTemplate.STR;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.desktop2.torrent.client.peer.PeerPool;
 
-public class CliController {
-  public void handle(String[] args) {
-    if (args.length == 0) {
-      printAndExit("Need to specify torrent file");
-    }
-
-    final var fileName = args[0];
-    final var filePath = Paths.get(fileName);
-
+public class TorrentRunner {
+  public void handle(final String fileName, final Path filePath, ProgressCounter progressCounter) {
     if (!Files.exists(filePath)) {
       printAndExit(STR."Torrent file with given name(\{fileName}) does not exist");
     }
+
     byte[] fileContent = null;
     try {
       fileContent = Files.readAllBytes(filePath);
@@ -46,7 +40,7 @@ public class CliController {
     }
 
     final var torrent = new TorrentMapper().map(bencode);
-    final List<Future<?>> futures = new ArrayList<>();
+    final List<CompletableFuture<?>> futures = new ArrayList<>();
 
     System.out.println(STR."pieces number: \{torrent.pieces().size()}");
 
@@ -56,6 +50,8 @@ public class CliController {
     try (var threadPool = Executors.newCachedThreadPool()) {
 
       Queue<Integer> omittedPieces = new LinkedList<>();
+
+      progressCounter.numberPieces(torrent.pieces().size());
 
       for (int pieceIndex = 0; pieceIndex < torrent.pieces().size(); pieceIndex++) {
 
@@ -69,8 +65,8 @@ public class CliController {
         }
 
         int savedPieceIndex = pieceIndex;
-        futures.add(
-            threadPool.submit(
+        CompletableFuture<?> completableFuture =
+            CompletableFuture.supplyAsync(
                 () -> {
                   downloadedPieces.computeIfAbsent(
                       savedPieceIndex,
@@ -83,7 +79,23 @@ public class CliController {
                       torrent.pieces().get(savedPieceIndex),
                       downloadedPieces.get(savedPieceIndex));
                   peerPool.realise(peer);
-                }));
+
+                  return null;
+                },
+                threadPool);
+
+        completableFuture.thenAccept(
+            _ -> {
+              progressCounter.downloadPiece(savedPieceIndex);
+            });
+
+        completableFuture.exceptionally(
+            _ -> {
+              progressCounter.failedToDownloadPiece(savedPieceIndex);
+              return null;
+            });
+
+        futures.add(completableFuture);
       }
 
       threadPool.awaitTermination(Long.MAX_VALUE, TimeUnit.SECONDS);
