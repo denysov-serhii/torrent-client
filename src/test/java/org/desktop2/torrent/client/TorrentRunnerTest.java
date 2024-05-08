@@ -7,6 +7,7 @@ import java.io.FileOutputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.concurrent.TimeUnit;
 import lombok.SneakyThrows;
 import lombok.val;
 import org.junit.jupiter.api.Test;
@@ -20,7 +21,7 @@ class TorrentRunnerTest {
   @Test
   @SneakyThrows
   void handle() {
-    //export PATH=$PATH:/Users/serhiidenisov/Downloads/apache-maven-3.9.6
+    // export PATH=$PATH:/Users/serhiidenisov/Downloads/apache-maven-3.9.6
 
     val tmpConfigDir = Files.createTempDirectory("torrent-config");
     val tmpDownloadsDir = Files.createTempDirectory("torrent-downloads");
@@ -51,6 +52,8 @@ class TorrentRunnerTest {
     qbittorrent.withCopyFileToContainer(
         MountableFile.forHostPath(Paths.get(torrentFile)),
         STR."/downloads/\{FILE_TO_DOWNLOAD}.torrent");
+
+    TimeUnit.SECONDS.sleep(10);
 
     qbittorrent.stop();
   }
