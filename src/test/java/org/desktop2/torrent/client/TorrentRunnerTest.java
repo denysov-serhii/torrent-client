@@ -6,8 +6,12 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.net.URI;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
+import java.text.DecimalFormat;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import lombok.SneakyThrows;
 import lombok.val;
 import org.junit.jupiter.api.Test;
@@ -34,7 +38,7 @@ class TorrentRunnerTest {
                 .withEnv("PGID", "1000")
                 .withEnv("TZ", "Etc/UTC")
                 .withEnv("WEBUI_PORT", "8080")
-                .withEnv("TORRENTING_PORT", "6881")
+                .withEnv("TORRENTING_PORT", torrentPort + "")
                 .withExposedPorts(8080, torrentPort)
                 .withFileSystemBind(tmpConfigDir.toString(), "/config")
                 .withFileSystemBind(tmpDownloadsDir.toString(), "/downloads")
@@ -50,16 +54,17 @@ class TorrentRunnerTest {
     val torrentFile = generateTorrentFileFor(fileToDownload, uri);
 
     qbittorrent.withCopyFileToContainer(
-        MountableFile.forHostPath(Paths.get(torrentFile)),
-        STR."/downloads/\{FILE_TO_DOWNLOAD}.torrent");
+        MountableFile.forHostPath(torrentFile), STR."/downloads/\{FILE_TO_DOWNLOAD}.torrent");
 
-    TimeUnit.SECONDS.sleep(10);
+    val runner = new TorrentRunner();
+
+    runner.handle(torrentFile.toString(), torrentFile, new TestProgressCounter());
 
     qbittorrent.stop();
   }
 
   @SneakyThrows
-  private String generateTorrentFileFor(File file, URI uri) {
+  private Path generateTorrentFileFor(File file, URI uri) {
     val torrent = com.turn.ttorrent.common.Torrent.create(file, uri, "MyClient");
 
     val tmpTorrentFile = Files.createTempFile("torrent-testing", ".torrent");
@@ -67,6 +72,54 @@ class TorrentRunnerTest {
     fos.write(torrent.getEncoded());
     fos.close();
 
-    return tmpTorrentFile.toString();
+    return tmpTorrentFile;
+  }
+
+  private static class TestProgressCounter implements ProgressCounter {
+
+    private static final DecimalFormat df = new DecimalFormat("0.000");
+    private int numberOfPieces;
+    private AtomicInteger downloadedPieces = new AtomicInteger(0);
+    private AtomicInteger failedPieces = new AtomicInteger(0);
+    private final Runnable progressPrinter =
+        new Runnable() {
+          public void run() {
+            if (downloadedPieces.get() == 0) {
+              return;
+            }
+
+            double rate = ((double) numberOfPieces / downloadedPieces.get()) * 100;
+
+            System.out.print(
+                STR."Progress: \{
+                    df.format(rate)}, All:  Download:\{
+                    numberOfPieces} \{
+                    downloadedPieces} Failed: \{
+                    failedPieces} \r");
+          }
+        };
+
+    public TestProgressCounter() {
+      ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
+      executor.scheduleAtFixedRate(progressPrinter, 0, 3, TimeUnit.SECONDS);
+    }
+
+    @Override
+    public void numberPieces(int numberPieces) {
+      numberOfPieces = numberPieces;
+      System.out.println("Number of pieces: " + numberPieces);
+    }
+
+    @Override
+    public void downloadPiece(int numberOfPiece) {
+      downloadedPieces.incrementAndGet();
+      System.out.println(STR."Piece #\{numberOfPiece} is downloaded");
+    }
+
+    @Override
+    public void failedToDownloadPiece(int numberOfPiece) {
+      failedPieces.incrementAndGet();
+      System.out.println(STR."Piece #\{numberOfPiece} is downloaded");
+    }
   }
 }
