@@ -1,23 +1,25 @@
 package org.desktop2.torrent.client;
 
+import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.net.URI;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.*;
 import java.text.DecimalFormat;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import lombok.NonNull;
 import lombok.SneakyThrows;
 import lombok.val;
 import org.junit.jupiter.api.Test;
+import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.InternetProtocol;
 import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.utility.MountableFile;
 
 class TorrentRunnerTest {
   public static final String FILE_TO_DOWNLOAD = "test-file-to-download-via-torrent";
@@ -25,42 +27,47 @@ class TorrentRunnerTest {
   @Test
   @SneakyThrows
   void handle() {
-    // export PATH=$PATH:/Users/serhiidenisov/Downloads/apache-maven-3.9.6
 
-    val tmpConfigDir = Files.createTempDirectory("torrent-config");
     val tmpDownloadsDir = Files.createTempDirectory("torrent-downloads");
+    val tmpTorrentFilesDir = Files.createTempDirectory("torrent-files");
 
     int torrentPort = 6881;
-    GenericContainer qbittorrent =
-        (GenericContainer)
-            new GenericContainer("lscr.io/linuxserver/qbittorrent:latest")
-                .withEnv("PUID", "1000")
-                .withEnv("PGID", "1000")
-                .withEnv("TZ", "Etc/UTC")
-                .withEnv("WEBUI_PORT", "8080")
-                .withEnv("TORRENTING_PORT", torrentPort + "")
-                .withExposedPorts(8080, torrentPort)
-                .withFileSystemBind(tmpConfigDir.toString(), "/config")
-                .withFileSystemBind(tmpDownloadsDir.toString(), "/downloads")
-                .waitingFor(Wait.forListeningPort());
+    TestGenericContainer simpleTrackerContainer =
+        new TestGenericContainer("gaydara27/simple-torrent-tracker:1.0.0-SNAPSHOT")
+            .withEnv("PORT", torrentPort + "")
+            .withFileSystemBind(tmpDownloadsDir.toString(), "/downloads", BindMode.READ_WRITE)
+            .withFileSystemBind(
+                tmpTorrentFilesDir.toString(), "/torrent-files", BindMode.READ_WRITE)
+            .withEnv("APP_ARGS", STR."TRACKER /downloads /torrent-files")
+            .waitingFor(Wait.forListeningPort());
 
-    qbittorrent.start();
+    simpleTrackerContainer.addFixedExposedPort(torrentPort, torrentPort, InternetProtocol.TCP);
+    simpleTrackerContainer.addFixedExposedPort(torrentPort, torrentPort, InternetProtocol.UDP);
 
-    URI uri = new URI(STR."http://\{qbittorrent.getHost()}:\{torrentPort}/announce");
+    simpleTrackerContainer.start();
+
+    URI uri = new URI(STR."http://\{simpleTrackerContainer.getHost()}:\{torrentPort}/announce");
 
     ClassLoader classLoader = getClass().getClassLoader();
     File fileToDownload = new File(classLoader.getResource(FILE_TO_DOWNLOAD).getFile());
 
-    val torrentFile = generateTorrentFileFor(fileToDownload, uri);
-
-    qbittorrent.withCopyFileToContainer(
-        MountableFile.forHostPath(torrentFile), STR."/downloads/\{FILE_TO_DOWNLOAD}.torrent");
+    Files.copy(fileToDownload.toPath(), tmpDownloadsDir, REPLACE_EXISTING);
 
     val runner = new TorrentRunner();
 
-    runner.handle(torrentFile.toString(), torrentFile, new TestProgressCounter());
+    val torrentFile =
+        waitForTorrentFile(tmpTorrentFilesDir, STR."\{FILE_TO_DOWNLOAD}.torrent").toPath();
 
-    qbittorrent.stop();
+    try {
+      runner.handle(torrentFile.toString(), torrentFile, new TestProgressCounter());
+    } catch (Exception e) {
+      e.printStackTrace();
+    } finally {
+      Files.walk(tmpDownloadsDir).map(Path::toFile).forEach(File::delete);
+    }
+
+    TimeUnit.SECONDS.sleep(60);
+    simpleTrackerContainer.stop();
   }
 
   @SneakyThrows
@@ -73,6 +80,42 @@ class TorrentRunnerTest {
     fos.close();
 
     return tmpTorrentFile;
+  }
+
+  @SneakyThrows
+  private File waitForTorrentFile(Path folder, String targetFile) {
+    WatchService watcher = FileSystems.getDefault().newWatchService();
+    folder.register(watcher, StandardWatchEventKinds.ENTRY_CREATE);
+
+    System.out.println(STR."Watch Service registered for dir: \{folder}");
+
+    while (true) {
+      WatchKey key;
+      key = watcher.take();
+
+      for (WatchEvent<?> event : key.pollEvents()) {
+        WatchEvent.Kind<?> kind = event.kind();
+
+        @SuppressWarnings("unchecked")
+        WatchEvent<Path> ev = (WatchEvent<Path>) event;
+        Path fileName = ev.context();
+
+        System.out.println(STR."\{kind.name()}: \{fileName}");
+
+        if (kind == StandardWatchEventKinds.ENTRY_CREATE
+            && fileName.toString().equals(targetFile)) {
+          System.out.println(STR."File \{fileName} has been created!");
+          return new File(folder + File.separator + fileName);
+        }
+      }
+
+      boolean valid = key.reset();
+      if (!valid) {
+        break;
+      }
+    }
+
+    throw new RuntimeException("Unable to wait for the file");
   }
 
   private static class TestProgressCounter implements ProgressCounter {
@@ -120,6 +163,18 @@ class TorrentRunnerTest {
     public void failedToDownloadPiece(int numberOfPiece) {
       failedPieces.incrementAndGet();
       System.out.println(STR."Piece #\{numberOfPiece} is downloaded");
+    }
+  }
+
+  static class TestGenericContainer extends GenericContainer<TestGenericContainer> {
+
+    public TestGenericContainer(@NonNull String dockerImageName) {
+      super(dockerImageName);
+    }
+
+    @Override
+    public void addFixedExposedPort(int hostPort, int containerPort, InternetProtocol protocol) {
+      super.addFixedExposedPort(hostPort, containerPort, protocol);
     }
   }
 }

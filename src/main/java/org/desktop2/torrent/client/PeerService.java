@@ -14,7 +14,7 @@ import org.desktop2.torrent.client.peer.Peer;
 
 public class PeerService {
 
-  private static final int PORT = 80; // TODO: Need to understand which port should be used
+  private static final int PORT = 6881; // TODO: Need to understand which port should be used
 
   @SneakyThrows
   public List<Peer> getPeers(Torrent torrent, String peerId) {
