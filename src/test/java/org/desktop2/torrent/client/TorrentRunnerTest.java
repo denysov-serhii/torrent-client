@@ -28,16 +28,25 @@ class TorrentRunnerTest {
   @SneakyThrows
   void handle() {
 
-    val tmpDownloadsDir = Files.createTempDirectory("torrent-downloads");
-    val tmpTorrentFilesDir = Files.createTempDirectory("torrent-files");
+    val commonTmpFolder = Files.createTempDirectory("torrent-client-tests");
+
+    val downloadsDir = Paths.get(STR."\{commonTmpFolder}\{File.separator}downloads");
+    val torrentFilesDir = Paths.get(STR."\{commonTmpFolder}\{File.separator}torrent-files");
+
+    Files.createDirectory(downloadsDir);
+    Files.createDirectory(torrentFilesDir);
+
+    System.out.println(STR."Common folder: \{commonTmpFolder}");
+    System.out.println(STR."Downloads files folder: \{downloadsDir}");
+    System.out.println(STR."Torrent files folder: \{torrentFilesDir}");
 
     int torrentPort = 6881;
     TestGenericContainer simpleTrackerContainer =
         new TestGenericContainer("gaydara27/simple-torrent-tracker:1.0.0-SNAPSHOT")
             .withEnv("PORT", torrentPort + "")
-            .withFileSystemBind(tmpDownloadsDir.toString(), "/downloads", BindMode.READ_WRITE)
+            .withFileSystemBind(downloadsDir.toString(), "/downloads", BindMode.READ_WRITE)
             .withFileSystemBind(
-                tmpTorrentFilesDir.toString(), "/torrent-files", BindMode.READ_WRITE)
+                    torrentFilesDir.toString(), "/torrent-files", BindMode.READ_WRITE)
             .withEnv("APP_ARGS", STR."TRACKER /downloads /torrent-files")
             .waitingFor(Wait.forListeningPort());
 
@@ -51,22 +60,24 @@ class TorrentRunnerTest {
     ClassLoader classLoader = getClass().getClassLoader();
     File fileToDownload = new File(classLoader.getResource(FILE_TO_DOWNLOAD).getFile());
 
-    Files.copy(fileToDownload.toPath(), tmpDownloadsDir, REPLACE_EXISTING);
+    System.out.println(STR."Is file\{fileToDownload.toPath()} exist? \{fileToDownload.exists()}");
+
+
+    Files.copy(fileToDownload.toPath(),concatFolderWithFileName(downloadsDir, fileToDownload), REPLACE_EXISTING);
 
     val runner = new TorrentRunner();
 
-    val torrentFile =
-        waitForTorrentFile(tmpTorrentFilesDir, STR."\{FILE_TO_DOWNLOAD}.torrent").toPath();
-
     try {
+      val torrentFile =
+              waitForTorrentFile(torrentFilesDir, STR."\{FILE_TO_DOWNLOAD}.torrent", 60).toPath();
+
       runner.handle(torrentFile.toString(), torrentFile, new TestProgressCounter());
     } catch (Exception e) {
       e.printStackTrace();
     } finally {
-      Files.walk(tmpDownloadsDir).map(Path::toFile).forEach(File::delete);
+      Files.walk(commonTmpFolder).map(Path::toFile).forEach(File::delete);
     }
 
-    TimeUnit.SECONDS.sleep(60);
     simpleTrackerContainer.stop();
   }
 
@@ -83,7 +94,7 @@ class TorrentRunnerTest {
   }
 
   @SneakyThrows
-  private File waitForTorrentFile(Path folder, String targetFile) {
+  private File waitForTorrentFile(Path folder, String targetFile, int timeoutSeconds) {
     WatchService watcher = FileSystems.getDefault().newWatchService();
     folder.register(watcher, StandardWatchEventKinds.ENTRY_CREATE);
 
@@ -91,7 +102,7 @@ class TorrentRunnerTest {
 
     while (true) {
       WatchKey key;
-      key = watcher.take();
+      key = watcher.poll(timeoutSeconds, TimeUnit.SECONDS);
 
       for (WatchEvent<?> event : key.pollEvents()) {
         WatchEvent.Kind<?> kind = event.kind();
@@ -176,5 +187,12 @@ class TorrentRunnerTest {
     public void addFixedExposedPort(int hostPort, int containerPort, InternetProtocol protocol) {
       super.addFixedExposedPort(hostPort, containerPort, protocol);
     }
+  }
+
+  private static Path concatFolderWithFileName(Path path, File file) {
+    return concatFolderWithFileName(path, file.getName());
+  }
+  private static Path concatFolderWithFileName(Path path, String fileName) {
+    return Paths.get(path + File.separator + fileName);
   }
 }
